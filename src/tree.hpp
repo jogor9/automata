@@ -1,0 +1,4 @@
+#ifndef AUTOMATA_TREE_HPP
+#define AUTOMATA_TREE_HPP
+
+#endif // #ifndef AUTOMATA_TREE_HPP
