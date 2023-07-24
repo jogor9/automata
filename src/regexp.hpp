@@ -14,6 +14,7 @@
 #include <map>
 #include "util.hpp"
 #include "dynamic_tree.hpp"
+#include "bitset.hpp"
 #include "fa.hpp"
 
 namespace automata {
@@ -933,35 +934,76 @@ struct regexp : protected dynamic_tree<regexp_data> {
 		});
 		return result;
 	}
-	// some transitions can add a capture (or more captures if the automaton is made deterministic) to their 'out' state
-	// captures are stored in states
-	// captures have an associated capture group ID, their position in the given string and can be marked either as a beginning or as an ending
-	//
-	// on an ε-move, the capture within the state must be copied to the out state // note: use std::shared_ptr // note: don't, you can't 'merge' shared_ptrs anyway
-	// on a non-ε-move, the capture within the state must be moved to the out state
-	//
-	// if a state dies, the captures within it are destroyed
-	// if a capture is at an accepting state on end of input, it is added to the capture list
-	typedef std::tuple<size_t, size_t, size_t> capture_state_data;
-	enum CAPTURE_TYPE {
-		CAPTURE_TYPE_START = 0x1,
-		CAPTURE_TYPE_END = 0x2
-	};
-	typedef std::set<std::pair<int, size_t>> id_collection;
-	typedef std::set<capture_state_data> automaton_state_type;
-	using dynamic_bitset = boost::dynamic_bitset<size_t>;
-	typedef std::pair<id_collection, dynamic_bitset> automaton_delta_type;
-	typedef finite_automaton<automaton_state_type, automaton_delta_type> automaton_type;
+	AUTOMATA_TUPLE_STRUCT2(
+		dfa_completed_capture,
+		size_t, start,
+		size_t, end
+	);
+	AUTOMATA_TUPLE_STRUCT2(
+		dfa_incomplete_capture,
+		size_t, start,
+		size_t, nfa_state
+	);
+	typedef std::set<dfa_completed_capture> dfa_completed_captures;
+	typedef std::set<dfa_incomplete_capture> dfa_incomplete_captures;
+	AUTOMATA_TUPLE_STRUCT2(
+		dfa_capture_group,
+		dfa_completed_captures, completed,
+		dfa_incomplete_captures, incomplete
+	);
+	typedef std::vector<dfa_capture_group> dfa_state;
+
+	AUTOMATA_TUPLE_STRUCT2(
+		nfa_state_pair,
+		size_t, from_state,
+		size_t, to_state
+	);
+
+	AUTOMATA_TUPLE_STRUCT3(
+		dfa_delta,
+		std::vector<std::set<size_t>>, group_starts,
+		std::vector<std::set<nfa_state_pair>>, group_continues,
+		std::vector<std::set<size_t>>, group_ends
+	);
+	
+	AUTOMATA_TUPLE_STRUCT2(
+		nfa_completed_capture,
+		size_t, start,
+		size_t, end
+	);
+	AUTOMATA_TUPLE_STRUCT1(
+		nfa_incomplete_capture,
+		size_t, start
+	);
+	typedef std::set<nfa_completed_capture> nfa_completed_captures;
+	typedef std::set<nfa_incomplete_capture> nfa_incomplete_captures;
+	AUTOMATA_TUPLE_STRUCT2(
+		nfa_capture_group,
+		nfa_completed_captures, completed,
+		nfa_incomplete_captures, incomplete
+	);
+	typedef std::vector<nfa_capture_group> nfa_state;
+
+	AUTOMATA_TUPLE_STRUCT3(
+		nfa_delta,
+		std::set<size_t>, starts,
+		std::set<size_t>, ends,
+		bitset<>, owners
+	);
+
+	typedef finite_automaton<nfa_state, nfa_delta> nfa_type;
+	typedef finite_automaton<dfa_state, dfa_delta> dfa_type;
+
 	std::tuple<
-		automaton_type,
+		nfa_type,
 		size_t,
 		size_t
-	> compile(size_t re, size_t capture_group_id, finite_automaton<> input_alphabet, size_t state_limit) const {
-		return compile(node(re), capture_group_id, std::move(input_alphabet), state_limit);
+	> compile(size_t re, size_t capture_group_id, finite_automaton<> input_alphabet) const {
+		return compile(node(re), capture_group_id, std::move(input_alphabet));
 	}
 	// second part is the group id, third is the index of the accepting state
 	std::tuple<
-		automaton_type,
+		nfa_type,
 		size_t,
 		size_t
 	> compile(
@@ -970,41 +1012,39 @@ struct regexp : protected dynamic_tree<regexp_data> {
 		// 0 capture is owned by the whole string
 		// the returned group id should also be the last owned capture group
 		size_t capture_group_id,
-		finite_automaton<> input_alphabet,
-		size_t state_limit
+		finite_automaton<> input_alphabet
 	) const {
-		using fa = automaton_type;
 		using ret = std::tuple<
-			automaton_type,
+			nfa_type,
 			size_t,
 			size_t
 		>;
-		fa result = input_alphabet;
-		auto get_default_transition_construct = [] (fa& A) {
-			return [&A] (size_t p, size_t a, size_t q) -> automaton_delta_type {
+		nfa_type result = input_alphabet;
+		auto get_default_transition_construct = [] (nfa_type& A) {
+			return [&A] (size_t p, size_t a, size_t q) -> nfa_delta {
 				return std::move(A.get_delta(p, a, q));
 			};
 		};
-		auto get_transition_merger = [] (fa& A) {
-			return [&A] (automaton_delta_type& t, size_t, size_t, size_t, size_t p, size_t a, size_t q) {
-				auto&& [c, b] = A.get_delta(p, a, q);
-				t.first.merge(c);
-				t.second.resize(std::max(t.second.size(), b.size()));
-				t.second |= b;
+		auto get_transition_merger = [] (nfa_type& A) {
+			return [&A] (nfa_delta& t, size_t, size_t, size_t, size_t p, size_t a, size_t q) {
+				auto&& delta = A.get_delta(p, a, q);
+				t.starts().merge(delta.starts());
+				t.ends().merge(delta.ends());
+				t.owners() |= delta.owners();
 			};
 		};
 		if (re->capture()) {
 			++capture_group_id;
 		}
 		size_t result_acc;
-		auto default_state_construct = [] (size_t) -> automaton_state_type { return {}; };
+		auto default_state_construct = [] (size_t) -> nfa_state { return {}; };
 		switch (re->symbol()) {
 		case CONCATENATION: {
-			auto [R, cgi, ra] = compile(node(re.left()), capture_group_id, input_alphabet, state_limit);
+			auto [R, cgi, ra] = compile(node(re.left()), capture_group_id, input_alphabet);
 			if (R.empty()) {
 				return ret();
 			}
-			auto [S, cgi2, sa] = compile(node(re.right()), cgi, input_alphabet, state_limit);
+			auto [S, cgi2, sa] = compile(node(re.right()), cgi, input_alphabet);
 			if (S.empty()) {
 				return ret();
 			}
@@ -1012,6 +1052,9 @@ struct regexp : protected dynamic_tree<regexp_data> {
 			auto state_map = R.join(S, default_state_construct, get_default_transition_construct(S));
 			R.remove_state(state_map.at(0));
 			R.remove_accepting(ra);
+			if (ra == R.first_start_state()) {
+				R.add_start_state(state_map.at(S.first_start_state()));
+			}
 			R.contract_state(ra, state_map.at(S.first_start_state()), get_transition_merger(R));
 			R.add_accepting(state_map.at(sa));
 			result = std::move(R);
@@ -1019,23 +1062,29 @@ struct regexp : protected dynamic_tree<regexp_data> {
 			break;
 		}
 		case DISJUNCTION: {
-			auto [R, cgi, ra] = compile(re.left(), capture_group_id, input_alphabet, state_limit);
+			auto [R, cgi, ra] = compile(re.left(), capture_group_id, input_alphabet);
 			if (R.empty()) {
 				return ret();
 			}
-			auto [S, cgi2, sa] = compile(re.right(), cgi, input_alphabet, state_limit);
+			auto [S, cgi2, sa] = compile(re.right(), cgi, input_alphabet);
 			if (S.empty()) {
 				return ret();
 			}
 			capture_group_id = cgi2;
+			if (R.first_start_state() == ra) {
+				R.remove_start_state(ra);
+				size_t new_start = R.push_state();
+				R.add_start_state(new_start);
+				R.add_delta(new_start, R.epsilon_symbol(), ra);
+			}
 			auto state_map = R.join(S, default_state_construct, get_default_transition_construct(S));
 			R.remove_state(state_map.at(0));
 			size_t start = R.push_state();
 			size_t end = R.push_state();
 
 			R.contract_state(R.first_start_state(), start, get_transition_merger(R));
-			R.contract_state(state_map.at(S.first_start_state()), start, get_transition_merger(R));
 			R.contract_state(ra, end, get_transition_merger(R));
+			R.contract_state(state_map.at(S.first_start_state()), start, get_transition_merger(R));
 			R.contract_state(state_map.at(sa), end, get_transition_merger(R));
 
 			R.add_start_state(start);
@@ -1047,13 +1096,13 @@ struct regexp : protected dynamic_tree<regexp_data> {
 			break;
 		}
 		case CLOSURE: {
-			auto [R, cgi, ra] = compile(re.left(), capture_group_id, input_alphabet, state_limit);
+			auto [R, cgi, ra] = compile(re.left(), capture_group_id, input_alphabet);
 			if (R.empty()) {
 				return ret();
 			}
 			capture_group_id = cgi;
-			R.add_delta(ra, R.epsilon_symbol(), R.first_start_state());
-			R.add_delta(R.first_start_state(), R.epsilon_symbol(), ra);
+			R.contract_state_looped(R.first_start_state(), ra, get_transition_merger(R));
+			R.add_start_state(ra);
 			result = std::move(R);
 			result_acc = ra;
 			break;
@@ -1097,47 +1146,27 @@ struct regexp : protected dynamic_tree<regexp_data> {
 		}
 		if (re->capture()) {
 			result.for_each_transition([&](size_t p, size_t a, size_t q) {
-				auto&& [_, bitset] = result.get_delta(p, a, q);
-				bitset.resize(std::max(bitset.size(), capture_group_id));
-				bitset.set(capture_group_id - 1);
+				auto&& delta = result.get_delta(p, a, q);
+				delta.owners().resize(std::max(delta.owners().size(), capture_group_id));
+				delta.owners().set(capture_group_id - 1);
 				return true;
 			});
 			result.for_each_out_delta(result.first_start_state(), [&](size_t p, size_t a, size_t q) {
-				result.get_delta(p, a, q).first.emplace(CAPTURE_TYPE_START, capture_group_id);
+				auto&& delta = result.get_delta(p, a, q);
+				delta.starts().insert(capture_group_id - 1);
 				return true;
 			});
 			result.for_each_in_delta(result_acc, [&](size_t p, size_t a, size_t q) {
-				result.get_delta(p, a, q).first.emplace(CAPTURE_TYPE_END, capture_group_id);
+				auto&& delta = result.get_delta(p, a, q);
+				delta.ends().insert(capture_group_id - 1);
 				return true;
 			});
 		}
-		//if (not re->charset() and re->comp()) {
-		//	result = result.deterministic(
-		//		[](automaton_state_type&, size_t, size_t){},
-		//		[&](automaton_delta_type& s, size_t, size_t, size_t, size_t p, size_t a, size_t q) {
-		//			auto&& [marks, bitset] = result.get_delta(p, a, q);
-		//			s.first.insert(marks.begin(), marks.end());
-		//			s.second.resize(std::max(s.second.size(), bitset.size()));
-		//			s.second |= bitset;
-		//		},
-		//		state_limit * base::subtree_size(re) / base::size()
-		//	);
-		//	if (result.empty()) {
-		//		return ret();
-		//	}
-		//	result.complement();
-		//	result_acc = result.push_state();
-		//	result.for_each_accepting([&] (size_t q) {
-		//		result.add_delta(q, result.epsilon_symbol(), result_acc);
-		//		result.remove_accepting(q);
-		//	});
-		//}
 		return std::tuple(std::move(result), capture_group_id, result_acc);
 	}
-	automaton_type compile(size_t state_limit) const {
-		using fa = automaton_type;
+	nfa_type compile() const {
 		if (is_null()) {
-			return fa();
+			return nfa_type();
 		}
 		finite_automaton<> input_alphabet;
 		base::traverse_out_of_order([&](size_t i) {
@@ -1150,7 +1179,7 @@ struct regexp : protected dynamic_tree<regexp_data> {
 				input_alphabet.push_symbol(n->symbol());
 			}
 		});
-		auto result = std::get<0>(compile(root(), 0, input_alphabet, state_limit));
+		auto result = std::get<0>(compile(root(), 0, input_alphabet));
 		for (size_t c : anchors()) {
 			result.for_each_state([&](size_t q) -> bool {
 					result.add_transition(q, c, q);
@@ -1159,178 +1188,112 @@ struct regexp : protected dynamic_tree<regexp_data> {
 		}
 		return result;
 	}
-	automaton_type compile_deterministic(size_t state_limit) const {
-		auto r = compile(state_limit);
-		r = r.deterministic(
-			[](automaton_state_type&, size_t, size_t){},
-			[&](automaton_delta_type& s, size_t, size_t, size_t, size_t p, size_t a, size_t q) {
-				auto&& [marks, bitset] = r.get_delta(p, a, q);
-				s.first.insert(marks.begin(), marks.end());
-				size_t sz = std::max(s.second.size(), bitset.size());
-				s.second.resize(sz);
-				bitset.resize(sz);
-				s.second |= bitset;
-			},
-			state_limit
-		);
-		return r;
-	}
-	auto compile_deterministic() const {
-		return compile_deterministic(1 << 20);
-	}
-	auto compile() const {
-		return compile(1 << 20);
-	}
-	template <
-		std::invocable<automaton_state_type&, size_t, size_t> Start,
-		std::invocable<automaton_state_type&, size_t, size_t, size_t> End,
-		std::invocable<size_t, size_t, size_t, automaton_state_type&> Copy
-	>
-	struct capture_callbacks {
-		Start start;
-		End end;
-		Copy copy;
+	//dfa_type compile_deterministic(size_t state_limit) const {
+	//	auto r = compile(state_limit);
+	//	r = r.deterministic(
+	//		[](automaton_state_type&, size_t, size_t){},
+	//		[&](automaton_delta_type& s, size_t, size_t, size_t, size_t p, size_t a, size_t q) {
+	//			auto&& [marks, bitset] = r.get_delta(p, a, q);
+	//			s.first.insert(marks.begin(), marks.end());
+	//			size_t sz = std::max(s.second.size(), bitset.size());
+	//			s.second.resize(sz);
+	//			bitset.resize(sz);
+	//			s.second |= bitset;
+	//		},
+	//		state_limit
+	//	);
+	//	return r;
+	//}
+	//auto compile_deterministic() const {
+	//	return compile_deterministic(1 << 20);
+	//}
 
-		capture_callbacks(Start start, End end, Copy copy) : start(start), end(end), copy(copy) {}
+	static constexpr auto NFA_COPY_ALL_INCOMPLETE_CAPTURES = [] (size_t gid, size_t begin, nfa_state& sets) -> void {
+		sets[gid].incomplete().emplace(begin);
 	};
-	static constexpr size_t CAPTURE_GID_INDEX = 0;
-	static constexpr size_t CAPTURE_BEGIN_INDEX = 1;
-	static constexpr size_t CAPTURE_END_INDEX = 2;
+	static constexpr auto NFA_COPY_ALL_COMPLETED_CAPTURES = [] (size_t gid, size_t begin, size_t end, nfa_state& sets) -> void {
+		sets[gid].completed().emplace(begin, end);
+	};
 
-	static constexpr auto CAPTURE_ALL_START = [] (automaton_state_type& set, size_t gid, size_t begin) -> void {
-		set.emplace(gid, begin, -1);
-	};
-	static constexpr auto CAPTURE_ALL_END = [] (automaton_state_type& set, size_t gid, size_t begin, size_t end) -> void {
-		set.emplace(gid, begin, end);
-	};
-	static constexpr auto CAPTURE_ALL_COPY = [](size_t gid, size_t begin, size_t end, automaton_state_type& q) -> void {
-		q.emplace(gid, begin, end);
-	};
-	inline static const capture_callbacks CAPTURE_ALL = capture_callbacks(CAPTURE_ALL_START, CAPTURE_ALL_END, CAPTURE_ALL_COPY);
-
-	static constexpr auto CAPTURE_LEFTMOST_LONGEST_START = [] (automaton_state_type& set, size_t gid, size_t begin) -> void {
-		// at most one capture in a state can be complete
-		// at most one capture in a state can be incomplete and its begin must be less than or equal to the completed capture's begin if it exists
-		// an incomplete capture appears before a complete capture if its begin is less than the complete capture and after it if they are equal
-		auto [gbegin, gend] = partial_equal_range(set, gid);
-		auto complete_pred = [] (const capture_state_data& s) { return std::get<CAPTURE_END_INDEX>(s) != (size_t)-1; };
-		auto complete = std::find_if(gbegin, gend, complete_pred);
-		auto incomplete = std::find_if_not(gbegin, gend, complete_pred);
-		if (complete == gend and incomplete == gend) {
-			set.emplace_hint(gend, gid, begin, -1);
-		} else if (complete != gend and incomplete == gend) {
-			if (std::get<CAPTURE_BEGIN_INDEX>(*complete) >= begin) {
-				set.emplace_hint(std::get<CAPTURE_BEGIN_INDEX>(*complete) == begin ? gend : complete, gid, begin, -1);
-			}
-		} /*else if (complete == gend and incomplete != gend) {
-			if (std::get<CAPTURE_BEGIN_INDEX>(*incomplete) > begin) {
-				set.erase(incomplete);
-				set.emplace_hint(gend, gid, begin, -1);
-			}
-		}*/ else { // equivalent to the branch above because complete == gend
-			if (std::get<CAPTURE_BEGIN_INDEX>(*incomplete) > begin) {
-				set.erase(incomplete);
-				set.emplace_hint(complete, gid, begin, -1);
-			}
+	static constexpr auto NFA_COPY_LEFTMOST_LONGEST_INCOMPLETE_CAPTURES = [] (size_t gid, size_t begin, nfa_state& sets) -> void {
+		auto&& captures = sets[gid].incomplete();
+		if (captures.empty()) {
+			captures.emplace(begin);
+		} else if (captures.begin()->start() > begin) {
+			captures.clear();
+			captures.emplace(begin);
 		}
 	};
-	static constexpr auto CAPTURE_LEFTMOST_LONGEST_END = [] (automaton_state_type& set, size_t gid, size_t begin, size_t end) -> void {
-		auto [gbegin, gend] = partial_equal_range(set, gid);
-		auto complete_pred = [] (const capture_state_data& s) { return std::get<CAPTURE_END_INDEX>(s) != (size_t)-1; };
-		auto complete = std::find_if(gbegin, gend, complete_pred);
-		auto incomplete = std::find_if_not(gbegin, gend, complete_pred);
-		if (complete == gend and incomplete == gend) {
-			set.emplace_hint(gend, gid, begin, end);
-		} else if (complete != gend and incomplete == gend) {
-			if (std::get<CAPTURE_BEGIN_INDEX>(*complete) > begin
-			or (std::get<CAPTURE_BEGIN_INDEX>(*complete) == begin and std::get<CAPTURE_END_INDEX>(*complete) < begin)) {
-				set.erase(complete);
-				set.emplace_hint(gend, gid, begin, end);
-			}
-		} else if (complete == gend and incomplete != gend) {
-			if (std::get<CAPTURE_BEGIN_INDEX>(*incomplete) > begin) {
-				set.erase(incomplete);
-				set.emplace_hint(gend, gid, begin, end);
-			} else {
-				set.emplace_hint(incomplete, gid, begin, end);
-			}
-		} else {
-			if (std::get<CAPTURE_BEGIN_INDEX>(*complete) > begin
-			or (std::get<CAPTURE_BEGIN_INDEX>(*complete) == begin and std::get<CAPTURE_END_INDEX>(*complete) < begin)) {
-				set.erase(complete);
-				if (std::get<CAPTURE_BEGIN_INDEX>(*incomplete) > begin) {
-					set.erase(incomplete);
-					set.emplace_hint(gend, gid, begin, end);
-				} else {
-					set.emplace_hint(incomplete, gid, begin, end);
-				}
-			}
+	static constexpr auto NFA_COPY_LEFTMOST_LONGEST_COMPLETED_CAPTURES = [] (size_t gid, size_t begin, size_t end, nfa_state& sets) -> void {
+		auto&& captures = sets[gid].completed();
+		if (captures.empty()) {
+			captures.emplace(begin, end);
+		} else if (captures.begin()->start() > begin
+			   or (captures.begin()->start() == begin and captures.begin()->end() < end)) {
+			captures.clear();
+			captures.emplace(begin, end);
 		}
 	};
-	static constexpr auto CAPTURE_LEFTMOST_LONGEST_COPY = [] (size_t gid, size_t begin, size_t end, automaton_state_type& q) -> void {
-		if (end == (size_t)-1) {
-			CAPTURE_LEFTMOST_LONGEST_START(q, gid, begin);
-		} else {
-			CAPTURE_LEFTMOST_LONGEST_END(q, gid, begin, end);
-		}
-	};
-	// todo: implement not overlapping leftmost longest capture callbacks, fix/workaround DFAs
-	inline static const capture_callbacks CAPTURE_LEFTMOST_LONGEST = capture_callbacks(
-		CAPTURE_LEFTMOST_LONGEST_START, CAPTURE_LEFTMOST_LONGEST_END, CAPTURE_LEFTMOST_LONGEST_COPY
-	);
+	// todo: DFAs, non-overlapping leftmost longest captures
 	template <typename CharT>
-	static std::vector<std::set<std::pair<size_t, size_t>>> match(automaton_type& automaton, const CharT* s) {
-		return match(automaton, s, s + std::char_traits<CharT>::length(s), CAPTURE_ALL);
+	static std::vector<nfa_completed_captures> match(nfa_type& automaton, const CharT* s) {
+		return match(automaton, s, s + std::char_traits<CharT>::length(s), NFA_COPY_ALL_INCOMPLETE_CAPTURES, NFA_COPY_ALL_COMPLETED_CAPTURES);
 	}
-	template <std::input_iterator It, typename Preds>
-		requires
-			std::invocable<decltype(std::declval<Preds>().start), automaton_state_type&, size_t, size_t> and
-			std::invocable<decltype(std::declval<Preds>().end), automaton_state_type&, size_t, size_t, size_t> and
-			std::invocable<decltype(std::declval<Preds>().copy), size_t, size_t, size_t, automaton_state_type&>
-	static std::vector<std::set<std::pair<size_t, size_t>>> match(
-		automaton_type& automaton, It begin, It end, Preds preds
+	template <std::input_iterator It, std::invocable<size_t, size_t, nfa_state&> IncompleteCopy, std::invocable<size_t, size_t, size_t, nfa_state&> CompletedCopy>
+	static std::vector<nfa_completed_captures> match(
+		nfa_type& automaton, It begin, It end, IncompleteCopy incomplete_copy, CompletedCopy completed_copy
 	) {
 		size_t end_pos = 0;
-		std::unordered_map<size_t, automaton_state_type> saved_states;
+		std::unordered_map<size_t, nfa_state> saved_states;
 		saved_states.reserve(automaton.state_count());
+		size_t max_group = 0;
+		automaton.for_each_transition([&] (size_t p, size_t a, size_t q) {
+			auto&& delta = automaton.get_delta(p, a, q);
+			if (not delta.starts().empty()) {
+				max_group = std::max(max_group, *delta.starts().rbegin());
+			}
+			return true;
+		});
+		max_group += 1;
+		automaton.for_each_state([&] (size_t q) {
+			automaton.get_state(q).resize(max_group);
+			saved_states[q].resize(max_group);
+			return true;
+		});
 		auto put_start_captures = [&](size_t p, size_t a, size_t q, size_t pos) {
-			auto&& [map, _] = automaton.get_delta(p, a, q);
+			auto&& delta = automaton.get_delta(p, a, q);
 			auto&& pset = automaton.get_state(p);
-			for (auto&& [_, gid] : std::ranges::subrange(
-				map.lower_bound(std::pair<int, size_t>(CAPTURE_TYPE_START,  0)),
-				map.upper_bound(std::pair<int, size_t>(CAPTURE_TYPE_START, -1))
-			)) {
-				preds.start(pset, gid, pos);
+			for (size_t gid : delta.starts()) {
+				incomplete_copy(gid, pos, pset);
 			}
 		};
 		auto put_end_captures = [&](size_t p, size_t a, size_t q, size_t pos) {
-			auto&& [map, _] = automaton.get_delta(p, a, q);
+			auto&& delta = automaton.get_delta(p, a, q);
 			auto&& qset = a == automaton.epsilon_symbol() ? automaton.get_state(q) : saved_states[q];
-			for (auto&& [_, gid] : std::ranges::subrange(
-				map.lower_bound(std::pair<int, size_t>(CAPTURE_TYPE_END,  0)),
-				map.upper_bound(std::pair<int, size_t>(CAPTURE_TYPE_END, -1))
-			)) {
-				auto filter = [] (const capture_state_data& csd) {
-					return std::get<CAPTURE_END_INDEX>(csd) == (size_t)-1;
-				};
-				std::vector t(qset.lower_bound(std::tuple(gid, size_t(0), size_t(0))), qset.upper_bound(std::tuple(gid, size_t(-1), size_t(-1))));
-				for (auto csd : t | std::views::filter(filter)) {
-					qset.erase(csd);
-					preds.end(qset, gid, std::get<CAPTURE_BEGIN_INDEX>(csd), pos + (a != automaton.epsilon_symbol()));
+			for (size_t gid : delta.ends()) {
+				auto&& incomplete = qset[gid].incomplete();
+				std::vector t(incomplete.begin(), incomplete.end());
+				for (auto&& capture : t) {
+					incomplete.erase(capture);
+					completed_copy(gid, capture.start(), pos + (a != automaton.epsilon_symbol()), qset);
 				}
 			}
 		};
 		auto copy_captures = [&](size_t p, size_t a, size_t q) {
 			auto&& pset = automaton.get_state(p);
-			auto&& qset = automaton.get_state(q);
-			auto&& [_, bitset] = automaton.get_delta(p, a, q);
-			auto filter = [&](const capture_state_data& s) {
-				auto i = std::get<CAPTURE_GID_INDEX>(s) - 1;
-				return std::get<CAPTURE_END_INDEX>(s) != (size_t)-1 or (i < bitset.size() and bitset.at(i));
-			};
-			for (auto&& [gid, begin, end] : pset | std::views::filter(filter)) {
-				preds.copy(gid, begin, end, qset);
+			auto&& qset = a == automaton.epsilon_symbol() ? automaton.get_state(q) : saved_states[q];
+			auto&& delta = automaton.get_delta(p, a, q);
+			for (size_t gid = 0; gid < pset.size(); ++gid) {
+				auto&& capture_group = pset[gid];
+				for (auto&& completed : capture_group.completed()) {
+					completed_copy(gid, completed.start(), completed.end(), qset);
+				}
 			}
+			delta.owners().for_each_in_set([&](size_t gid) {
+				for (auto&& incomplete : pset[gid].incomplete()) {
+					incomplete_copy(gid, incomplete.start(), qset);
+				}
+			});
 		};
 		auto t = [&](size_t p, size_t a, size_t q, size_t pos) -> bool {
 			if (a != automaton.epsilon_symbol()) {
@@ -1348,35 +1311,42 @@ struct regexp : protected dynamic_tree<regexp_data> {
 				copy_captures(p, a, q);
 				put_end_captures(p, a, q, pos);
 			}
-			pset.clear();
+			for (auto&& capture_group : pset) {
+				auto&& [completed, incomplete] = capture_group.decompose();
+				completed.clear();
+				incomplete.clear();
+			}
 			return true;
 		};
 		auto n = [&] (const auto& s, size_t pos) -> bool {
-			for (size_t q : s | std::views::filter([&](size_t q) { return saved_states.contains(q); })) {
-				automaton.get_state(q).merge(saved_states.at(q));
+			for (size_t q : s) {
+				auto&& state = saved_states[q];
+				for (size_t gid = 0; gid < state.size(); ++gid) {
+					auto&& astate = automaton.get_state(q);
+					astate[gid].incomplete().merge(state[gid].incomplete());
+					astate[gid].completed().merge(state[gid].completed());
+				}
 			}
-			saved_states.clear();
+			for (auto&& [_, state] : saved_states) {
+				for (auto&& capture_group : state) {
+					auto&& [completed, incomplete] = capture_group.decompose();
+					completed.clear();
+					incomplete.clear();
+				}
+			}
 			end_pos = pos;
 			return true;
 		};
 		bool zero_cap = automaton.simulate(begin, end, t, automaton.default_clos_callback(), n, s);
-		automaton_state_type captured;
-		automaton.for_each_accepting([&automaton, &captured](size_t q) {
-			captured.merge(automaton.get_state(q));
-		});
-		std::vector<std::set<std::pair<size_t, size_t>>> result;
-		if (not captured.empty()) {
-			auto max_gid = [](const capture_state_data& l, const capture_state_data& r) { return std::get<CAPTURE_GID_INDEX>(l) < std::get<CAPTURE_GID_INDEX>(r); };
-			auto max_group = std::max_element(captured.begin(), captured.end(), max_gid);
-			result.resize(std::get<CAPTURE_GID_INDEX>(*max_group) + 1);
-			for (auto&& [gid, begin, end] : captured) {
-				if (end != (size_t)-1) {
-					result.at(gid).emplace(begin, end);
-				}
+		std::vector<nfa_completed_captures> result;
+		result.resize(max_group + 1);
+		automaton.for_each_accepting([&](size_t q) {
+			auto&& state = automaton.get_state(q);
+			for (size_t gid = 0; gid < state.size(); ++gid) {
+				result[gid + 1].merge(state[gid].completed());
 			}
-		} else {
-			result.resize(1);
-		}
+			return true;
+		});
 		if (zero_cap) {
 			result.at(0).emplace(0, end_pos);
 		}

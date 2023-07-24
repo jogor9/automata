@@ -5,13 +5,26 @@
 #include <unordered_map>
 #include <cassert>
 #include "lazy_ptr.hpp"
+#include "bitset.hpp"
+#include "tests.hpp"
 #include "fa.hpp"
 #include "regexp.hpp"
 
 // todo: tokenizers, grammars, LALR parser
 
 using namespace std;
+using namespace std::literals::string_literals;
 using namespace automata;
+
+void print_captures(auto&& results) {
+	for (size_t i : std::views::iota(size_t(0), size_t(results.size()))) {
+		cout << "captures for group " << i << ":" << endl;
+		for (auto&& c : results.at(i)) {
+			auto&& [begin, end] = c.decompose();
+			cout << begin << " - " << end << endl;
+		}
+	}
+}
 
 int main() {
 	regexp re =
@@ -27,30 +40,34 @@ int main() {
 
 	auto cre = re.compile();
 	cout << encode_as_utf8(cre.to_string()) << endl;
+	//cout << '{' << endl;
+	//for (auto&& [transition, data] : cre.transitions->second) {
+	//	cout << '\t' << encode_as_utf8(to_u32string(transition)) << " -> " << encode_as_utf8(to_u32string(data)) << endl;
+	//}
+	//cout << '}' << endl;
 	std::string sa = "aabaaaaabaab";
 	cout << sa << endl;
 	cout << std::boolalpha << cre.simulate(sa.begin(), sa.end()) << endl;
 	auto results = regexp::match(cre, sa.c_str());
+	print_captures(results);
 
-	for (size_t i : std::views::iota(size_t(0), size_t(results.size()))) {
-		cout << "captures for group " << i << ":" << endl;
-		for (auto&& [begin, end] : results.at(i)) {
-			cout << begin << " - " << end << endl;
-		}
-	}
+	//cre = re.compile_deterministic();
+	//cout << encode_as_utf8(cre.to_string()) << endl;
+	//cout << '{' << endl;
+	//for (auto&& [transition, data] : cre.transitions->second) {
+	//	cout << '\t' << encode_as_utf8(to_u32string(transition)) << " -> " << encode_as_utf8(to_u32string(data)) << endl;
+	//}
+	//cout << '}' << endl;
+	//cout << sa << endl;
+	//cout << std::boolalpha << cre.simulate(sa.begin(), sa.end()) << endl;
+	//results = regexp::match(cre, sa.c_str());
 
-	cre = re.compile_deterministic();
-	cout << encode_as_utf8(cre.to_string()) << endl;
-	cout << sa << endl;
-	cout << std::boolalpha << cre.simulate(sa.begin(), sa.end()) << endl;
-	results = regexp::match(cre, sa.c_str());
-
-	for (size_t i : std::views::iota(size_t(0), size_t(results.size()))) {
-		cout << "captures for group " << i << ":" << endl;
-		for (auto&& [begin, end] : results.at(i)) {
-			cout << begin << " - " << end << endl;
-		}
-	}
+	//for (size_t i : std::views::iota(size_t(0), size_t(results.size()))) {
+	//	cout << "captures for group " << i << ":" << endl;
+	//	for (auto&& [begin, end] : results.at(i)) {
+	//		cout << begin << " - " << end << endl;
+	//	}
+	//}
 
 	re = regexp::symbol_regexp('a').to_closure().concat(regexp::symbol_regexp('b'));
 	cout << encode_as_utf8(re.to_string()) << endl;
@@ -61,12 +78,7 @@ int main() {
 	sa = "b";
 	cout << std::boolalpha << cre.simulate(sa.begin(), sa.end()) << endl;
 	results = regexp::match(cre, sa.c_str());
-	for (size_t i : std::views::iota(size_t(0), size_t(results.size()))) {
-		cout << "captures for group " << i << ":" << endl;
-		for (auto&& [begin, end] : results.at(i)) {
-			cout << begin << " - " << end << endl;
-		}
-	}
+	print_captures(results);
 
 	re = regexp::charset_regexp("a-c\\A").to_closure();
 	cout << encode_as_utf8(re.to_string()) << endl;
@@ -77,12 +89,7 @@ int main() {
 	sa = "abcccbaaaccbaAAAAA   ;':':'';;[]{[][]][}-=-+_=-";
 	cout << std::boolalpha << cre.simulate(sa.begin(), sa.end()) << endl;
 	results = regexp::match(cre, sa.c_str());
-	for (size_t i : std::views::iota(size_t(0), size_t(results.size()))) {
-		cout << "captures for group " << i << ":" << endl;
-		for (auto&& [begin, end] : results.at(i)) {
-			cout << begin << " - " << end << endl;
-		}
-	}
+	print_captures(results);
 
 	finite_automaton<std::string, std::string> fa;
 
@@ -144,4 +151,26 @@ int main() {
 	};
 	cout << std::boolalpha << fa.simulate(s.begin(), s.end(), printer) << endl;
 	cout << std::boolalpha << fa.simulate(s2.begin(), s2.end(), printer) << endl;
+
+	fa.clear();
+
+	q1 = fa.push_state();
+	q2 = fa.push_state();
+	q3 = fa.push_state();
+
+	fa.push_symbol('a');
+	fa.push_symbol('b');
+
+	fa.add_start_state(q1);
+	fa.add_accepting(q3);
+	
+	fa.add_transition(q1, 'a', q2);
+	fa.add_transition(q2, 'a', q3);
+	fa.add_transition(q2, 'b', q2);
+	
+	cout << fa.to_string() << endl;
+
+	fa.contract_state(q2, q1);
+
+	cout << fa.to_string() << endl;
 }

@@ -20,7 +20,7 @@ struct queue_iterator {
 
 	friend queue;
 protected:
-	static constexpr uintptr_t OWNER_MASK = pow2mask(bit_count<uintptr_t>() - 1);
+	static constexpr uintptr_t OWNER_MASK = pow2mask<uintptr_t>(bit_count<uintptr_t>() - 1);
 	static constexpr uintptr_t BEGIN_MASK = ~OWNER_MASK;
 	uintptr_t m_owner_begin;
 	pointer p;
@@ -184,7 +184,7 @@ struct queue_const_iterator {
 
 	friend Queue;
 protected:
-	static constexpr uintptr_t OWNER_MASK = pow2mask(bit_count<uintptr_t>() - 1);
+	static constexpr uintptr_t OWNER_MASK = pow2mask<uintptr_t>(bit_count<uintptr_t>() - 1);
 	static constexpr uintptr_t BEGIN_MASK = ~OWNER_MASK;
 	uintptr_t m_owner_begin;
 	pointer p;
@@ -488,6 +488,9 @@ public:
 		if (&o == this) {
 			return *this;
 		}
+		if (o.empty()) {
+			return clear();
+		}
 		queue t(o);
 		if (not t.empty()) {
 			*this = std::move(t);
@@ -514,7 +517,7 @@ public:
 		}
 		size_type new_cap = std::bit_ceil(new_ucap);
 		queue n(new_cap);
-		if (not n.empty()) {
+		if (n.capacity() != 0) {
 			std::uninitialized_move(begin(), end(), n.m_block);
 			n.m_size = size();
 			*this = std::move(n);

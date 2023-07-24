@@ -4,6 +4,8 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <set>
+#include <map>
 #include <functional>
 #include <algorithm>
 #include <ranges>
@@ -11,6 +13,7 @@
 #include <boost/dynamic_bitset.hpp>
 #include "util2.hpp"
 #include "queue.hpp"
+#include "bitset.hpp"
 
 namespace automata {
 
@@ -682,15 +685,15 @@ It for_each_adjacent(It begin, It end, F pred) {
 	return end;
 }
 
-template <typename Set, typename Key = typename Set::key_type>
-concept set_like = std::ranges::forward_range<Set> && requires (Set& s, const Key& k) {
+template <typename Set>
+concept set_like = std::ranges::forward_range<Set> && requires (Set& s, const typename Set::key_type& k) {
 	{ s.contains(k) } -> std::convertible_to<bool>;
 	s.insert(k);
 	s.erase(k);
 };
 
-template <typename Set, typename Key = typename Set::key_type>
-concept unordered_set_like = set_like<Set, Key>;
+template <typename Set>
+concept unordered_set_like = set_like<Set>;
 
 template <typename Range>
 concept reservable_range = requires (Range& r) { r.reserve(size_t()); };
@@ -1094,13 +1097,6 @@ std::basic_string<CharT>& operator*=(std::basic_string<CharT>& s, Int count) {
 	return s = s * count;
 }
 
-template <typename T>
-	requires requires (const T& t) { std::to_string(t); }
-std::u32string to_u32string(const T& t) {
-	auto&& s = std::to_string(t);
-	return std::u32string(s.begin(), s.end());
-}
-
 template <size_t First = 0, typename Tuple>
 Tuple& tuple_partial_argument_construct(Tuple& t) {
 	return t;
@@ -1219,6 +1215,33 @@ auto partial_equal_range(OrderedSet&& set, Args&&...known_keys) {
 		set.upper_bound(tuple_partial_max_fill<sizeof...(known_keys)>(tuple_partial_argument_construct(tuple(), std::forward<Args>(known_keys)...)))
 	);
 }
+template <typename T>
+concept tuple_like = requires (T& t) {
+	std::get<0>(t);
+	{ std::tuple_size_v<T> } -> std::convertible_to<size_t>;
+	typename std::tuple_element_t<0, T>;
+};
+template <typename T>
+concept scalar_like = std::is_scalar_v<T>;
+template <typename T>
+concept boolean_testable = scalar_like<T> or std::convertible_to<T, bool>;
+template <typename Map>
+concept map_like = std::ranges::forward_range<Map> and tuple_like<typename Map::value_type>
+and requires (Map& m, const typename Map::key_type& k, const typename Map::mapped_type& v) {
+	m[k] = v;
+	m.erase(k);
+	{ m.contains(k) } -> boolean_testable;
+};
+
+template <typename T>
+concept standard_string = std::same_as<
+	T,
+	std::basic_string<
+		typename T::value_type,
+		typename T::traits_type,
+		typename T::allocator_type
+	>
+>;
 
 consteval char32_t u32horizontalline() noexcept {
 	return U'─';
@@ -1230,16 +1253,37 @@ consteval char32_t u32crossline() noexcept {
 	return U'┼';
 }
 
-template <std::input_iterator It, std::invocable<typename std::iterator_traits<It>::reference> Printer>
-	requires requires (Printer p, typename std::iterator_traits<It>::reference i, std::u32string s) { s += p(i); }
-std::u32string sequence_to_string(It begin, It end, Printer printer, char32_t left, char32_t right) {
+static_assert(standard_string<std::string>);
+static_assert(not tuple_like<int>);
+static_assert(tuple_like<std::pair<int, int>>);
+static_assert(tuple_like<std::tuple<int>>);
+static_assert(tuple_like<std::tuple<int, int, int>>);
+static_assert(set_like<std::unordered_set<int>>);
+static_assert(set_like<std::set<int>>);
+static_assert(map_like<std::unordered_map<int, int>>);
+static_assert(map_like<std::map<int, int>>);
+template <typename T>
+std::u32string to_u32string(const T& t);
+template <size_t Start, size_t End, tuple_like Tuple>
+std::u32string tuple_subseq_elements_to_string(std::u32string prev, const Tuple& t) {
+	if constexpr (Start >= std::tuple_size_v<Tuple> or Start >= End) {
+		return prev;
+	} else {
+		return tuple_subseq_elements_to_string<Start + 1, End>(prev += U", " + to_u32string<std::tuple_element_t<Start, Tuple>>(std::get<Start>(t)), t);
+	}
+}
+template <std::ranges::input_range Range, std::invocable<typename std::ranges::range_value_t<Range>> Printer>
+	requires requires (Printer p, const std::ranges::range_value_t<Range>& i, std::u32string s) { s += p(i); }
+std::u32string sequence_to_u32string(const Range& r, Printer printer, char32_t left, char32_t right) {
+	auto begin = std::ranges::begin(r);
+	auto end = std::ranges::end(r);
 	if (begin == end) {
 		return { left, right };
 	}
 	std::u32string s;
 	s += left;
 	s += U' ';
-	s += *begin;
+	s += printer(*begin);
 	++begin;
 	for (; begin != end; ++begin) {
 		s += U", ";
@@ -1249,87 +1293,129 @@ std::u32string sequence_to_string(It begin, It end, Printer printer, char32_t le
 	s += right;
 	return s;
 }
-template <std::input_iterator It, std::invocable<typename std::iterator_traits<It>::reference> Printer>
-	requires requires (Printer p, typename std::iterator_traits<It>::reference i, std::u32string s) { s += p(i); }
-std::u32string sequence_to_string(It begin, It end, Printer printer) {
-	return sequence_to_string(begin, end, std::move(printer), U'[', U']');
-}
 
-
-template <typename T>
-concept standard_string = std::same_as<
-	std::remove_cvref_t<T>,
-	std::basic_string<
-		typename std::remove_cvref_t<T>::value_type,
-		typename std::remove_cvref_t<T>::traits_type,
-		typename std::remove_cvref_t<T>::allocator_type
-	>
->;
-
-template <std::input_iterator It>
-	requires standard_string<typename std::iterator_traits<It>::value_type>
-std::u32string sequence_to_string(It begin, It end) {
-	return sequence_to_string(
-		begin,
-		end,
-		[] (typename std::iterator_traits<It>::reference i) -> typename std::iterator_traits<It>::value_type {
-			return i;
-		}
-	);
-}
-template <std::input_iterator It>
-	requires requires (typename std::iterator_traits<It>::reference i) { { to_u32string(i) } -> std::same_as<std::u32string>; }
-std::u32string sequence_to_string(It begin, It end) {
-	return sequence_to_string(begin, end, [] (typename std::iterator_traits<It>::reference i) {
-		return to_u32string(i);
-	});
-}
-template <typename T>
-concept tuple_like = requires (T& t) {
-	std::get<0>(t);
-	{ std::tuple_size_v<T> } -> std::convertible_to<size_t>;
-	typename std::tuple_element_t<0, T>;
+template <typename Bitset>
+concept bitset_like = requires (Bitset& b, size_t i) {
+	{ b[i] } -> std::convertible_to<bool>;
+	{ b.size() } -> std::convertible_to<size_t>;
 };
-template <std::input_iterator It>
-	requires set_like<std::remove_cvref_t<typename std::iterator_traits<It>::value_type>>
-std::u32string sequence_to_string(It begin, It end);
-template <std::input_iterator It>
-	requires (not standard_string<typename std::iterator_traits<It>::value_type>
-	and not  set_like<std::remove_cvref_t<typename std::iterator_traits<It>::value_type>>
-	and not tuple_like<std::remove_cvref_t<typename std::iterator_traits<It>::value_type>>
-	and std::ranges::input_range<typename std::iterator_traits<It>::value_type>)
-std::u32string sequence_to_string(It begin, It end) {
-	return sequence_to_string(begin, end, [] (typename std::iterator_traits<It>::reference i) {
-		return sequence_to_string(std::ranges::begin(i), std::ranges::end(i));
-	});
+static_assert(bitset_like<bitset<size_t>>);
+template <typename CharT>
+bool is_left_bracket(CharT c) {
+	return c == '(' or c == '[' or c == '{';
 }
-template <std::input_iterator It>
-	requires set_like<std::remove_cvref_t<typename std::iterator_traits<It>::value_type>>
-std::u32string sequence_to_string(It begin, It end) {
-	return sequence_to_string(begin, end, [] (typename std::iterator_traits<It>::reference i) {
-		return sequence_to_string(std::ranges::begin(i), std::ranges::end(i));
-	}, U'{', U'}');
+template <typename CharT>
+bool is_right_bracket(CharT c) {
+	return c == ')' or c == ']' or c == '}';
 }
-template <tuple_like Tuple, size_t Start = 0, size_t End = std::tuple_size_v<Tuple>>
-std::u32string tuple_to_string(const Tuple& t) {
-	return 
-}
-template <std::input_iterator It>
-	requires tuple_like<typename std::iterator_traits<It>::value_type>
-std::u32string sequence_to_string(It begin, It end) {
-
-}
-
-#define CALL_RETURN_ON_FAIL_IF_PREDICATE(func, ...) \
-	if constexpr (std::predicate<decltype(std::bind(func __VA_OPT__(,) __VA_ARGS__))>) { \
-		if (not func(__VA_ARGS__)) { \
-			return false; \
-		} \
-	} else { \
-		func(__VA_ARGS__); \
+template <standard_string String>
+String structure_brackets(const String& s, String tab) {
+	using char_type = typename String::value_type;
+	size_t depth = 0;
+	const String newline = { char_type('\n') };
+	String result;
+	result.reserve(s.size() * 2);
+	for (auto&& line : s | std::views::split(newline)) {
+		result += tab * depth;
+		for (auto&& c : line) {
+			if (is_left_bracket(c)) {
+				++depth;
+				result += c;
+				result += newline;
+				result += tab * depth;
+			} else if (is_right_bracket(c)) {
+				if (depth == 0) {
+					return String();
+				}
+				--depth;
+				result += newline;
+				result += tab * depth;
+				result += c;
+			} else {
+				result += c;
+			}
+		}
+		result += newline;
 	}
+	return result;
+}
+template <standard_string String>
+String structure_brackets(const String& s) {
+	return structure_brackets(s, { typename String::value_type(' ') });
+}
+template <typename T>
+std::u32string to_u32string(const T& t) {
+	if constexpr (requires (const T& t) { std::to_string(t); }) {
+		auto&& s = std::to_string(t);
+		return std::u32string(s.begin(), s.end());
+	} else if constexpr (tuple_like<T>) {
+		if constexpr (std::tuple_size_v<T> == 0) {
+			return U"()";
+		} else {
+			return U"( " + tuple_subseq_elements_to_string<1, std::tuple_size_v<T>>(to_u32string(std::get<0>(t)), t) + U" )";
+		}
+	} else if constexpr (set_like<T>) {
+		return sequence_to_u32string(t, [](const std::ranges::range_value_t<T>& i) { return to_u32string(i); }, U'{', U'}');
+	} else if constexpr (map_like<T>) {
+		return sequence_to_u32string(t, [](const std::ranges::range_value_t<T>& t) {
+			return to_u32string(std::get<0>(t)) + U" -> " + to_u32string(std::get<1>(t));
+		}, U'{', U'}');
+	} else if constexpr (standard_string<T>) {
+		if constexpr (std::same_as<T, std::u32string>) {
+			return t;
+		} else {
+			return std::u32string(t.begin(), t.end());
+		}
+	} else if constexpr (std::ranges::input_range<T>) {
+		return sequence_to_u32string(t, [](const std::ranges::range_value_t<T>& i) { return to_u32string(i); }, U'[', U']');
+	} else if constexpr (bitset_like<T>) {
+		std::u32string s;
+		size_t d4 = t.size() / 4;
+		size_t r4 = t.size() % 4;
+		for (size_t i = 1; i <= 4 - r4; ++i) {
+			s += U'0';
+		}
+		for (size_t i = 1; i <= r4; ++i) {
+			s += U'0' + (bool)t[t.size() - i];
+		}
+		for (; d4 != 0; --d4) {
+			s += U'\'';
+			for (size_t i = 1; i <= 4; ++i) {
+				s += U'0' + (bool)t[d4 * 4 - i];
+			}
+		}
+		return s;
+			
+	} else {
+		t.thismemberdoesnotexistdonottrytomakethismemberexistibegyouthenextlinehasathrowexpressionanyway;
+		throw;
+	}
+}
+
+
+std::ostream& operator<<(std::ostream& stream, const std::u32string& string) {
+	stream << encode_as_utf8(string);
+	return stream;
+}
 
 
 } // namespace automata
+#define AUTOMATA_TUPLE_STRUCT1(struct_name,tp0,nm0) struct struct_name : public std::tuple<tp0> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0>(std::forward<Args>(args)...) {}std::tuple<tp0>& decompose() { return *this; }const std::tuple<tp0>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT2(struct_name,tp0,nm0,tp1,nm1) struct struct_name : public std::tuple<tp0,tp1> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1>& decompose() { return *this; }const std::tuple<tp0,tp1>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT3(struct_name,tp0,nm0,tp1,nm1,tp2,nm2) struct struct_name : public std::tuple<tp0,tp1,tp2> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT4(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT5(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT6(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT7(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT8(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT9(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7,tp8,nm8) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }tp8& nm8() { return std::get<8>(*this); }const tp8& nm8()  const { return std::get<8>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT10(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7,tp8,nm8,tp9,nm9) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }tp8& nm8() { return std::get<8>(*this); }const tp8& nm8()  const { return std::get<8>(*this); }tp9& nm9() { return std::get<9>(*this); }const tp9& nm9()  const { return std::get<9>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT11(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7,tp8,nm8,tp9,nm9,tp10,nm10) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }tp8& nm8() { return std::get<8>(*this); }const tp8& nm8()  const { return std::get<8>(*this); }tp9& nm9() { return std::get<9>(*this); }const tp9& nm9()  const { return std::get<9>(*this); }tp10& nm10() { return std::get<10>(*this); }const tp10& nm10()  const { return std::get<10>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT12(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7,tp8,nm8,tp9,nm9,tp10,nm10,tp11,nm11) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }tp8& nm8() { return std::get<8>(*this); }const tp8& nm8()  const { return std::get<8>(*this); }tp9& nm9() { return std::get<9>(*this); }const tp9& nm9()  const { return std::get<9>(*this); }tp10& nm10() { return std::get<10>(*this); }const tp10& nm10()  const { return std::get<10>(*this); }tp11& nm11() { return std::get<11>(*this); }const tp11& nm11()  const { return std::get<11>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT13(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7,tp8,nm8,tp9,nm9,tp10,nm10,tp11,nm11,tp12,nm12) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }tp8& nm8() { return std::get<8>(*this); }const tp8& nm8()  const { return std::get<8>(*this); }tp9& nm9() { return std::get<9>(*this); }const tp9& nm9()  const { return std::get<9>(*this); }tp10& nm10() { return std::get<10>(*this); }const tp10& nm10()  const { return std::get<10>(*this); }tp11& nm11() { return std::get<11>(*this); }const tp11& nm11()  const { return std::get<11>(*this); }tp12& nm12() { return std::get<12>(*this); }const tp12& nm12()  const { return std::get<12>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT14(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7,tp8,nm8,tp9,nm9,tp10,nm10,tp11,nm11,tp12,nm12,tp13,nm13) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }tp8& nm8() { return std::get<8>(*this); }const tp8& nm8()  const { return std::get<8>(*this); }tp9& nm9() { return std::get<9>(*this); }const tp9& nm9()  const { return std::get<9>(*this); }tp10& nm10() { return std::get<10>(*this); }const tp10& nm10()  const { return std::get<10>(*this); }tp11& nm11() { return std::get<11>(*this); }const tp11& nm11()  const { return std::get<11>(*this); }tp12& nm12() { return std::get<12>(*this); }const tp12& nm12()  const { return std::get<12>(*this); }tp13& nm13() { return std::get<13>(*this); }const tp13& nm13()  const { return std::get<13>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT15(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7,tp8,nm8,tp9,nm9,tp10,nm10,tp11,nm11,tp12,nm12,tp13,nm13,tp14,nm14) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13,tp14> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13,tp14>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13,tp14>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13,tp14>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }tp8& nm8() { return std::get<8>(*this); }const tp8& nm8()  const { return std::get<8>(*this); }tp9& nm9() { return std::get<9>(*this); }const tp9& nm9()  const { return std::get<9>(*this); }tp10& nm10() { return std::get<10>(*this); }const tp10& nm10()  const { return std::get<10>(*this); }tp11& nm11() { return std::get<11>(*this); }const tp11& nm11()  const { return std::get<11>(*this); }tp12& nm12() { return std::get<12>(*this); }const tp12& nm12()  const { return std::get<12>(*this); }tp13& nm13() { return std::get<13>(*this); }const tp13& nm13()  const { return std::get<13>(*this); }tp14& nm14() { return std::get<14>(*this); }const tp14& nm14()  const { return std::get<14>(*this); }}
+#define AUTOMATA_TUPLE_STRUCT16(struct_name,tp0,nm0,tp1,nm1,tp2,nm2,tp3,nm3,tp4,nm4,tp5,nm5,tp6,nm6,tp7,nm7,tp8,nm8,tp9,nm9,tp10,nm10,tp11,nm11,tp12,nm12,tp13,nm13,tp14,nm14,tp15,nm15) struct struct_name : public std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13,tp14,tp15> { template <typename...Args> struct_name(Args&&...args) : std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13,tp14,tp15>(std::forward<Args>(args)...) {}std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13,tp14,tp15>& decompose() { return *this; }const std::tuple<tp0,tp1,tp2,tp3,tp4,tp5,tp6,tp7,tp8,tp9,tp10,tp11,tp12,tp13,tp14,tp15>& decompose() const { return *this; }tp0& nm0() { return std::get<0>(*this); }const tp0& nm0()  const { return std::get<0>(*this); }tp1& nm1() { return std::get<1>(*this); }const tp1& nm1()  const { return std::get<1>(*this); }tp2& nm2() { return std::get<2>(*this); }const tp2& nm2()  const { return std::get<2>(*this); }tp3& nm3() { return std::get<3>(*this); }const tp3& nm3()  const { return std::get<3>(*this); }tp4& nm4() { return std::get<4>(*this); }const tp4& nm4()  const { return std::get<4>(*this); }tp5& nm5() { return std::get<5>(*this); }const tp5& nm5()  const { return std::get<5>(*this); }tp6& nm6() { return std::get<6>(*this); }const tp6& nm6()  const { return std::get<6>(*this); }tp7& nm7() { return std::get<7>(*this); }const tp7& nm7()  const { return std::get<7>(*this); }tp8& nm8() { return std::get<8>(*this); }const tp8& nm8()  const { return std::get<8>(*this); }tp9& nm9() { return std::get<9>(*this); }const tp9& nm9()  const { return std::get<9>(*this); }tp10& nm10() { return std::get<10>(*this); }const tp10& nm10()  const { return std::get<10>(*this); }tp11& nm11() { return std::get<11>(*this); }const tp11& nm11()  const { return std::get<11>(*this); }tp12& nm12() { return std::get<12>(*this); }const tp12& nm12()  const { return std::get<12>(*this); }tp13& nm13() { return std::get<13>(*this); }const tp13& nm13()  const { return std::get<13>(*this); }tp14& nm14() { return std::get<14>(*this); }const tp14& nm14()  const { return std::get<14>(*this); }tp15& nm15() { return std::get<15>(*this); }const tp15& nm15()  const { return std::get<15>(*this); }}
+
 
 #endif

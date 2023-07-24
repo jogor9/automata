@@ -594,24 +594,24 @@ struct finite_automaton {
 		clear();
 		delta_function = o.delta_function;
 		auto t = transitions.write();
-		if constexpr (std::constructible_from<TransitionData, const OtherT&>) {
-			t->first = TransitionData(o.transitions->first);
-			for (auto&& [key, val] : o.transitions->second) {
-				t->second.emplace(std::piecewise_construct, std::tuple(key), std::tuple(val));
-			}
-		} else {
+		//if constexpr (std::constructible_from<TransitionData, const OtherT&>) {
+		//	t->first = TransitionData(o.transitions->first);
+		//	for (auto&& [key, val] : o.transitions->second) {
+		//		t->second.emplace(std::piecewise_construct, std::tuple(key), std::tuple(val));
+		//	}
+		//} else {
 			for (auto&& [key, val] : o.transitions->second) {
 				t->second[key];
 			}
-		}
+		//}
 		input_alphabet = o.input_alphabet;
 		accepting_set = o.accepting_set;
 		state_set.resize(o.state_set.size());
-		if constexpr (std::constructible_from<StateData, const OtherS&>) {
-			o.for_each_state([&](size_t q) {
-				state_set.get(q) = StateData(o.get_state(q));
-			});
-		}
+		//if constexpr (std::constructible_from<StateData, const OtherS&>) {
+		//	o.for_each_state([&](size_t q) {
+		//		state_set.get(q) = StateData(o.get_state(q));
+		//	});
+		//}
 		start_state_set = o.start_state_set;
 		removed_states = o.removed_states;
 		m_epsilon_symbol = o.m_epsilon_symbol;
@@ -636,6 +636,12 @@ struct finite_automaton {
 			removed_states.write()->clear();
 		} else if (not removed_states->empty()) {
 			removed_states = make_lazy<unordered_set<size_t>>();
+		}
+		if (transitions.lone_owner()) {
+			transitions.write()->first = TransitionData();
+			transitions.write()->second.clear();
+		} else if (not transitions->second.empty()) {
+			transitions = make_lazy<std::pair<TransitionData, transition_map>>();
 		}
 		m_epsilon_symbol = input_alphabet.push(epsilon());
 	}
@@ -986,13 +992,17 @@ struct finite_automaton {
 		for_each_out_delta(p, [&](size_t, size_t a, size_t r) {
 			if (r == q) {
 				return true;
+			} else if (r == p) {
+				add_delta(q, a, q);
+				merger(get_delta(q, a, q), q, a, q, p, a, p);
+			} else {
+				add_delta(q, a, r);
+				merger(get_delta(q, a, r), q, a, r, p, a, r);
 			}
-			add_delta(q, a, r);
-			merger(get_delta(q, a, r), q, a, r, p, a, r);
 			return true;
 		});
 		for_each_in_delta(p, [&](size_t o, size_t a, size_t) {
-			if (o == q) {
+			if (o == q or o == p) {
 				return true;
 			}
 			add_delta(o, a, q);
@@ -1000,6 +1010,29 @@ struct finite_automaton {
 			return true;
 		});
 		return remove_state(p);
+	}
+	template <transition_merger<TransitionData> TransitionMerger>
+	StateData contract_state_looped(size_t p, size_t q, TransitionMerger merger) {
+		for_each_out_delta(p, [&](size_t, size_t a, size_t r) {
+			if (r == q or r == p) {
+				add_delta(q, a, q);
+				merger(get_delta(q, a, q), q, a, q, p, a, r);
+			} else {
+				add_delta(q, a, r);
+				merger(get_delta(q, a, r), q, a, r, p, a, r);
+			}
+			return true;
+		});
+		for_each_in_delta(p, [&](size_t o, size_t a, size_t) {
+			if (o == q or o == p) {
+				return true;
+			}
+			add_delta(o, a, q);
+			merger(get_delta(o, a, q), o, a, q, o, a, p);
+			return true;
+		});
+		return remove_state(p);
+
 	}
 	StateData contract_state(size_t p, size_t q) {
 		return contract_state(p, q, [&](TransitionData& t, size_t, size_t, size_t, size_t p, size_t a, size_t q) {
@@ -1417,7 +1450,9 @@ struct finite_automaton {
 	}
 	template <typename...Args>
 	CONSTEXPR void add_delta(size_t src, size_t a, size_t dst, Args&&...args) {
-		if (src == 0 or dst == 0 or not valid_delta(src, a, dst) or contains_delta(src, a, dst)) {
+		bool v = valid_delta(src, a, dst);
+		bool c = contains_delta(src, a, dst);
+		if (src == 0 or dst == 0 or not v or c) {
 			return;
 		}
 		transitions.write()->second.emplace(transition(src, a, dst), TransitionData(std::forward<Args>(args)...));

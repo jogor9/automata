@@ -3,6 +3,15 @@
 
 #include <cstddef>
 
+#define CALL_RETURN_ON_FAIL_IF_PREDICATE(func, ...) \
+	if constexpr (std::predicate<decltype(std::bind(func __VA_OPT__(,) __VA_ARGS__))>) { \
+		if (not func(__VA_ARGS__)) { \
+			return false; \
+		} \
+	} else { \
+		func(__VA_ARGS__); \
+	}
+
 namespace automata {
 
 template <typename T>

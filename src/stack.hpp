@@ -88,6 +88,9 @@ public:
 		if (&o == this) {
 			return *this;
 		}
+		if (o.empty()) {
+			return clear();
+		}
 		stack t(o);
 		if (not t.empty()) { // strong exception guarantee
 			*this = std::move(t);
@@ -136,9 +139,8 @@ public:
 		if (new_ucap <= capacity()) {
 			return *this;
 		}
-		size_type new_cap = std::bit_ceil(new_ucap);
-		stack n(new_cap);
-		if (not n.empty()) { // strong exception guarantee
+		stack n(std::bit_ceil(new_ucap));
+		if (n.capacity() != 0) { // strong exception guarantee
 			n.m_data = n.m_bottom - size();
 			std::uninitialized_move(m_data, m_bottom, n.m_data);
 			*this = std::move(n);
