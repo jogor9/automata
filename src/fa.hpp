@@ -1710,6 +1710,14 @@ struct finite_automaton {
 	void remove_dead() {
 		return remove_dead(default_state_callback());
 	}
+	bool has_loop(size_t q) const noexcept {
+		return not for_each_out_delta(q, [&](size_t p, size_t, size_t q) {
+			if (p == q) {
+				return false;
+			}
+			return true;
+		});
+	}
 	unordered_map<size_t, size_t> state_indices() const {
 		unordered_map<size_t, size_t> states_to_indices;
 		states_to_indices.reserve(state_count());

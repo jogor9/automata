@@ -1071,11 +1071,21 @@ struct regexp : protected dynamic_tree<regexp_data> {
 				return ret();
 			}
 			capture_group_id = cgi2;
-			if (R.first_start_state() == ra) {
-				R.remove_start_state(ra);
-				size_t new_start = R.push_state();
-				R.add_start_state(new_start);
-				R.add_delta(new_start, R.epsilon_symbol(), ra);
+			nfa_type* const A[2] = { &R, &S };
+			for (size_t i = 0; i < 2; ++i) {
+				if (A[i]->has_loop(A[i]->first_start_state())) {
+					size_t old_start = A[i]->first_start_state();
+					A[i]->remove_start_state(old_start);
+					size_t new_start = A[i]->push_state();
+					A[i]->add_start_state(new_start);
+					A[i]->add_delta(new_start, A[i]->epsilon_symbol(), old_start);
+				}
+				if (A[i]->has_loop(ra) or A[i]->first_start_state() == ra) {
+					A[i]->remove_accepting(ra);
+					size_t new_end = A[i]->push_state();
+					A[i]->add_accepting(new_end);
+					A[i]->add_delta(ra, A[i]->epsilon_symbol(), new_end);
+				}
 			}
 			auto state_map = R.join(S, default_state_construct, get_default_transition_construct(S));
 			R.remove_state(state_map.at(0));
@@ -1182,7 +1192,9 @@ struct regexp : protected dynamic_tree<regexp_data> {
 		auto result = std::get<0>(compile(root(), 0, input_alphabet));
 		for (size_t c : anchors()) {
 			result.for_each_state([&](size_t q) -> bool {
-					result.add_transition(q, c, q);
+				result.add_transition(q, c, q);
+				auto&& delta = result.get_transition(q, c, q);
+				delta.owners().complement();
 				return true;
 			});
 		}
