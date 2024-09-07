@@ -6,6 +6,10 @@
 
 namespace automata {
 
+void regexp_test() {
+
+}
+
 void bitset_test() {
 	bitset<uint8_t> a("010101010101");
 	bitset<uint8_t> b("001100110011");

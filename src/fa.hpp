@@ -780,7 +780,7 @@ struct finite_automaton {
 		for_each_input_symbol([&](size_t i, size_t) {
 			max_input_symbol = std::max(max_input_symbol, i);
 		});
-		size_t max_alphabet_name_size = (size_t)std::log10(max_input_symbol) + 1 + 1;
+		size_t max_alphabet_name_size = max_input_symbol == 0 ? 1 : (size_t)std::log10(max_input_symbol) + 1 + 1;
 		size_t max_entry_name_count = 0;
 		size_t left_column_size = max_name_size + 4;
 		for (auto&& state : *delta_function.transition_table) {
@@ -1711,7 +1711,7 @@ struct finite_automaton {
 		return remove_dead(default_state_callback());
 	}
 	bool has_loop(size_t q) const noexcept {
-		return not for_each_out_delta(q, [&](size_t p, size_t, size_t q) {
+		return not for_each_out_delta(q, [](size_t p, size_t, size_t q) {
 			if (p == q) {
 				return false;
 			}
@@ -2008,12 +2008,23 @@ struct finite_automaton {
 	finite_automaton& invert_transitions(size_t src, size_t dst) {
 		return invert_transitions(src, dst, default_callback(), default_callback());
 	}
-	template <state_merger<StateData> SM, transition_merger<TransitionData> TM>
-	finite_automaton deterministic(SM sm, TM tm, size_t state_limit) const {
+	bool part_of_strongly_connected_component(size_t q) const {
+		bool b = false;
+		depth_first_transition_search([&](size_t, size_t, size_t sq) {
+			if (sq == q) {
+				b = true;
+				return false;
+			}
+			return true;
+		}, state_set_type{q});
+		return b;
+	}
+	template <typename Result = finite_automaton, state_merger<typename Result::state_type> SM, transition_merger<typename Result::transition_type> TM>
+	Result deterministic(SM sm, TM tm, size_t state_limit) const {
 		if (is_deterministic()) {
 			return *this;
 		}
-		finite_automaton result;
+		Result result;
 		result.input_alphabet = input_alphabet;
 		std::unordered_map<state_set_type, size_t, set_hash<state_set_type>, ordered_set_equal_to<state_set_type>> set_map;
 		set_map.emplace(state_set_type(), 0);
@@ -2039,10 +2050,9 @@ struct finite_automaton {
 						ns = result.push_state();
 						set_map.emplace(new_set, ns);
 						result.set_accepting(ns, std::any_of(new_set.begin(), new_set.end(), [&](size_t q) { return accepts(q); }));
-						for_each_adjacent(new_set.begin(), new_set.end(), [&](size_t s0, size_t s1) {
-							sm(result.get_state(ns), s0, s1);
-							return true;
-						});
+						for (auto&& s : new_set) {
+							sm(result.get_state(ns), ns, s);
+						}
 						sets.push(new_set);
 					} else {
 						ns = set_map.at(new_set);
